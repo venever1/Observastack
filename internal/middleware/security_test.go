@@ -226,6 +226,8 @@ func TestCORS_NeverEnablesCredentials(t *testing.T) {
 	}
 }
 
+// Header values are asserted as literals rather than against the constants, so
+// an unintended change to a security header is caught here.
 func TestSecurityHeaders_SetsAllHeaders(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
@@ -233,16 +235,40 @@ func TestSecurityHeaders_SetsAllHeaders(t *testing.T) {
 	SecurityHeaders(okHandler()).ServeHTTP(rec, req)
 
 	want := map[string]string{
-		headerXContentTypeOptions: valueNoSniff,
-		headerXFrameOptions:       valueDeny,
-		headerStrictTransport:     valueHSTS,
-		headerContentSecurityPol:  valueCSP,
-		headerReferrerPolicy:      valueReferrer,
+		headerXContentTypeOptions: "nosniff",
+		headerXFrameOptions:       "DENY",
+		headerStrictTransport:     "max-age=63072000; includeSubDomains",
+		headerContentSecurityPol:  "default-src 'none'",
+		headerReferrerPolicy:      "no-referrer",
 	}
 
 	for header, expected := range want {
 		if got := rec.Header().Get(header); got != expected {
 			t.Errorf("%s = %q, want %q", header, got, expected)
+		}
+	}
+}
+
+// The API serves JSON only, so CSP must forbid every resource type rather than
+// merely restricting them to the same origin.
+func TestSecurityHeaders_CSPIsNoneNotSelf(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/tasks", nil)
+
+	SecurityHeaders(okHandler()).ServeHTTP(rec, req)
+
+	csp := rec.Header().Get(headerContentSecurityPol)
+
+	if csp != "default-src 'none'" {
+		t.Errorf("CSP = %q, want %q", csp, "default-src 'none'")
+	}
+	if strings.Contains(csp, "'self'") {
+		t.Errorf("CSP = %q must not fall back to 'self' for a JSON-only API", csp)
+	}
+	// 'unsafe-inline' and wildcards would defeat the point of the header.
+	for _, forbidden := range []string{"'unsafe-inline'", "'unsafe-eval'", "*", "data:"} {
+		if strings.Contains(csp, forbidden) {
+			t.Errorf("CSP = %q must not contain %q", csp, forbidden)
 		}
 	}
 }

@@ -46,8 +46,13 @@ const (
 	valueNoSniff = "nosniff"
 	valueDeny    = "DENY"
 	// Two years, the value recommended by the OWASP Secure Headers project.
-	valueHSTS     = "max-age=63072000; includeSubDomains"
-	valueCSP      = "default-src 'self'"
+	valueHSTS = "max-age=63072000; includeSubDomains"
+	// "none" rather than "self": this API only ever emits JSON and serves no
+	// HTML, static assets or API docs, so no resource type needs to be allowed.
+	// It is also strictly tighter, since it forbids every fetch destination
+	// rather than only cross-origin ones. Revisit if a Swagger UI or any other
+	// document-rendering endpoint is ever served.
+	valueCSP      = "default-src 'none'"
 	valueReferrer = "no-referrer"
 )
 
