@@ -40,6 +40,10 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       MAX_REQUEST_BODY_SIZE: ${MAX_REQUEST_BODY_SIZE:-1048576}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      # false is correct for THIS stack: it publishes the app directly on the
+      # host with no reverse proxy in front. Flip to true only when deploying
+      # behind a trusted Traefik/nginx that sets X-Forwarded-For — never if the
+      # app is directly internet-facing, or the per-IP rate limit is bypassable.
       TRUSTED_PROXY: ${TRUSTED_PROXY:-false}
       RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-1m}
       RATE_LIMIT_LOGIN_IP_REQUESTS: ${RATE_LIMIT_LOGIN_IP_REQUESTS:-20}

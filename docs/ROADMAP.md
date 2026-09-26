@@ -69,6 +69,14 @@
   berada di depan app (`docs/ARCHITECTURE.md`). Kalau dibiarkan `false` di produksi,
   semua request akan terlihat berasal dari satu IP proxy sehingga limit per-IP
   berlaku global untuk semua user.
+- **Deploy demo publik: `TRUSTED_PROXY` WAJIB diubah.** Kedua compose file di repo
+  ini memakai `TRUSTED_PROXY=false` dan **tidak** mendefinisikan Traefik/nginx —
+  app dipublish langsung ke host. `false` benar untuk stack tersebut.
+  Saat deploy ke VPS di belakang Traefik (`docs/ARCHITECTURE.md:31`), set
+  `TRUSTED_PROXY=true`, karena jika tidak semua request terlihat berasal dari satu
+  IP proxy dan limit per-IP jadi global untuk semua user.
+  JANGAN pernah `true` bila app bisa dijangkau langsung dari internet: header
+  `X-Forwarded-For` dikontrol klien, jadi limit per-IP bisa di-bypass sepenuhnya.
 - `TestMiddleware_CountsRequests` (`internal/observability/metrics_test.go`) tidak
   idempoten: gagal bila dijalankan dengan `go test -count=2` karena membandingkan
   counter Prometheus global dengan literal `1`.
