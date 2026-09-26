@@ -24,7 +24,7 @@ jobs:
           version: v1.60.3
 
       - name: Run tests
-        run: go test -v ./...
+        run: go test -race -v ./...
 
   build-and-push:
     needs: lint-and-test
