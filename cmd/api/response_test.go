@@ -227,42 +227,6 @@ func TestRegisterHandler_BodyTooLarge(t *testing.T) {
 	}
 }
 
-func TestMaskEmail(t *testing.T) {
-	cases := []struct {
-		email string
-		want  string
-	}{
-		{email: "alice@example.com", want: "a***@example.com"},
-		{email: "a@example.com", want: "a***@example.com"},
-		{email: "alice.private@example.com", want: "a***@example.com"},
-		{email: "no-at-sign", want: "***"},
-		{email: "", want: "***"},
-		{email: "@example.com", want: "***"},
-		{email: `"quoted"@example.com`, want: `"***@example.com`},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.email, func(t *testing.T) {
-			if got := maskEmail(tc.email); got != tc.want {
-				t.Errorf("maskEmail(%q) = %q, want %q", tc.email, got, tc.want)
-			}
-		})
-	}
-}
-
-// maskEmail must never return more of the local part than a single character.
-func TestMaskEmail_NeverLeaksLocalPart(t *testing.T) {
-	secrets := []string{
-		"alice@example.com",
-		"alice.private@example.com",
-		"averyveryverylongusername@example.com",
-	}
-
-	for _, email := range secrets {
-		masked := maskEmail(email)
-		local := email[:strings.IndexByte(email, '@')]
-		if strings.Contains(masked, local) {
-			t.Errorf("maskEmail(%q) = %q leaks the local part", email, masked)
-		}
-	}
-}
+// MaskEmail itself is covered by internal/observability/redact_test.go. The
+// assertions here only verify that this handler actually routes emails through
+// it.

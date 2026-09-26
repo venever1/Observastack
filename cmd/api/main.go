@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -68,16 +67,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// maskEmail redacts the local part of an email address so logs can correlate a
-// registration attempt without recording the full address.
-func maskEmail(email string) string {
-	at := strings.IndexByte(email, '@')
-	if at <= 0 {
-		return "***"
-	}
-	return email[:1] + "***" + email[at:]
-}
-
 // newRegisterHandler handles POST /auth/register.
 //
 // Internal error detail is logged server-side through the structured logger and
@@ -117,7 +106,7 @@ func newRegisterHandler(logger *observability.Logger) http.HandlerFunc {
 
 		// Email is masked and the password is never logged.
 		logger.Info(r.Context(), "INFO", r.Method, r.URL.Path, http.StatusOK,
-			time.Since(start), "registration received for "+maskEmail(req.Email))
+			time.Since(start), "registration received for "+observability.MaskEmail(req.Email))
 
 		writeJSON(w, http.StatusOK, registerResponse{
 			Data: registerData{Email: req.Email},

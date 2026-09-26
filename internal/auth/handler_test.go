@@ -176,23 +176,6 @@ func TestRegisterHandler_NoEmailOnDecodeFailure(t *testing.T) {
 	}
 }
 
-func TestMaskEmailInAuth(t *testing.T) {
-	cases := []struct {
-		email string
-		want  string
-	}{
-		{email: "alice@example.com", want: "a***@example.com"},
-		{email: "a@example.com", want: "a***@example.com"},
-		{email: "no-at-sign", want: "***"},
-		{email: "", want: "***"},
-		{email: "@example.com", want: "***"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.email, func(t *testing.T) {
-			if got := maskEmail(tc.email); got != tc.want {
-				t.Errorf("maskEmail(%q) = %q, want %q", tc.email, got, tc.want)
-			}
-		})
-	}
-}
+// MaskEmail itself is covered by internal/observability/redact_test.go. The
+// assertions here only verify that this handler actually routes emails through
+// it.

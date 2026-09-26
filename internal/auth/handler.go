@@ -3,7 +3,6 @@ package auth
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"time"
 
 	"observastack/internal/observability"
@@ -21,16 +20,6 @@ type Handler struct {
 // any form, not even masked.
 func NewHandler(service *Service, logger *observability.Logger) *Handler {
 	return &Handler{service: service, logger: logger}
-}
-
-// maskEmail redacts the local part of an email so a log entry can identify its
-// subject without recording the full address.
-func maskEmail(email string) string {
-	at := strings.IndexByte(email, '@')
-	if at <= 0 {
-		return "***"
-	}
-	return email[:1] + "***" + email[at:]
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +55,7 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info(r.Context(), "INFO", r.Method, r.URL.Path, http.StatusCreated,
-		time.Since(start), "registration accepted for "+maskEmail(user.Email))
+		time.Since(start), "registration accepted for "+observability.MaskEmail(user.Email))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
