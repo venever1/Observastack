@@ -60,6 +60,12 @@ func main() {
 	}
 	log.Printf("✓ postgres connected")
 
+	redisClient, err := config.OpenRedis(ctx, cfg.RedisHost, cfg.RedisPort, cfg.RedisPassword, cfg.RedisDB)
+	if err != nil {
+		log.Fatalf("open redis: %v", err)
+	}
+	log.Printf("✓ redis connected")
+
 	tokens, err := auth.NewTokenManager(cfg.JWTSecret, cfg.JWTAccessTTL)
 	if err != nil {
 		log.Fatalf("create token manager: %v", err)
@@ -83,6 +89,21 @@ func main() {
 	authHandler := auth.NewHandler(authService, logger)
 	log.Printf("✓ auth service wired")
 
+	// Rate limiters. Login is limited on both dimensions: per-IP stops one host
+	// spraying many accounts, per-email stops a botnet grinding a single account.
+	// Registration is limited per-IP only, which is enough to slow mass account
+	// creation.
+	rlWindow := cfg.RateLimit.Window
+	loginIPLimit := middleware.NewRateLimiter(redisClient, "ratelimit:login:ip:",
+		cfg.RateLimit.LoginIPRequests, rlWindow)
+	loginEmailLimit := middleware.NewRateLimiter(redisClient, "ratelimit:login:email:",
+		cfg.RateLimit.LoginEmailRequests, rlWindow)
+	registerIPLimit := middleware.NewRateLimiter(redisClient, "ratelimit:register:ip:",
+		cfg.RateLimit.RegisterIPRequests, rlWindow)
+	log.Printf("✓ rate limiting: login %d/%d, register %d per %s (trusted_proxy=%t)",
+		cfg.RateLimit.LoginIPRequests, cfg.RateLimit.LoginEmailRequests,
+		cfg.RateLimit.RegisterIPRequests, rlWindow, cfg.TrustedProxy)
+
 	mux := http.NewServeMux()
 
 	// Untraced: health check & readiness probe
@@ -102,18 +123,34 @@ func main() {
 	})))
 
 	// Traced routes: /metrics plus the four auth endpoints from docs/API_SPEC.md.
-	// Order per route: Tracer (outer) -> Log (inner, sees span) -> handler
+	// Order per route: Tracer (outer) -> Log (inner, sees span) -> RateLimit -> handler.
+	//
+	// RateLimit sits inside the global BodyLimit middleware, so the prefix it
+	// buffers when deriving a per-subject key is already bounded, and its 429
+	// still travels out through observability to be counted.
 	mux.Handle("GET /metrics", observability.TracerMiddleware(observability.LogMiddleware(logger)(observability.Handler())))
 
-	authRoutes := map[string]http.HandlerFunc{
-		"POST /auth/register": authHandler.Register,
-		"POST /auth/login":    authHandler.Login,
-		"POST /auth/refresh":  authHandler.Refresh,
-		"POST /auth/logout":   authHandler.Logout,
+	loginLimiter := middleware.RateLimit(loginIPLimit, loginEmailLimit, cfg.TrustedProxy,
+		middleware.JSONSubject("email"))
+	registerLimiter := middleware.RateLimit(registerIPLimit, nil, cfg.TrustedProxy, nil)
+
+	authRoutes := []struct {
+		pattern string
+		limiter func(http.Handler) http.Handler
+		handler http.HandlerFunc
+	}{
+		{pattern: "POST /auth/register", limiter: registerLimiter, handler: authHandler.Register},
+		{pattern: "POST /auth/login", limiter: loginLimiter, handler: authHandler.Login},
+		{pattern: "POST /auth/refresh", handler: authHandler.Refresh},
+		{pattern: "POST /auth/logout", handler: authHandler.Logout},
 	}
-	for pattern, handler := range authRoutes {
-		mux.Handle(pattern, observability.TracerMiddleware(
-			observability.LogMiddleware(logger)(handler)))
+	for _, route := range authRoutes {
+		h := http.Handler(route.handler)
+		if route.limiter != nil {
+			h = route.limiter(h)
+		}
+		mux.Handle(route.pattern, observability.TracerMiddleware(
+			observability.LogMiddleware(logger)(h)))
 	}
 
 	bodyLimit, err := middleware.MaxRequestBodySize()
@@ -171,6 +208,12 @@ func main() {
 		// were recorded while handling the requests that just drained.
 		db.Close()
 		log.Printf("✓ postgres pool closed")
+
+		if err := redisClient.Close(); err != nil {
+			log.Printf("redis close: %v", err)
+		} else {
+			log.Printf("✓ redis client closed")
+		}
 
 		if tracerProvider != nil {
 			if err := tracerProvider.Shutdown(flushCtx); err != nil {
