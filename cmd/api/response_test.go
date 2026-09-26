@@ -189,7 +189,7 @@ func TestRegisterHandler_NoPIIInLogsOnDecodeFailure(t *testing.T) {
 	var logBuf bytes.Buffer
 	handler := newRegisterHandler(newCapturingLogger(&logBuf))
 
-	rec := postRegister(t, handler, `{"email":"bob@example.com","password":"hunter2`,)
+	rec := postRegister(t, handler, `{"email":"bob@example.com","password":"hunter2`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}

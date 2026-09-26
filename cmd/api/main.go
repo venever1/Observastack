@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,6 +58,10 @@ type registerResponse struct {
 
 // codeValidationError is the API_SPEC error code for a malformed request body.
 const codeValidationError = "VALIDATION_ERROR"
+
+// envAllowedOriginsName is referenced in startup logs so operators know exactly
+// which variable to set when cross-origin access is being blocked.
+const envAllowedOriginsName = "ALLOWED_ORIGINS"
 
 // writeJSON encodes v with encoding/json. Going through the encoder rather than
 // string interpolation is what makes quotes, backslashes, newlines and
@@ -178,9 +183,39 @@ func main() {
 		log.Fatal(err)
 	}
 
+	allowedOrigins, err := middleware.AllowedOriginsFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+	if len(allowedOrigins) == 0 {
+		log.Printf("warning: %s not set, cross-origin requests will be blocked", envAllowedOriginsName)
+	} else {
+		log.Printf("allowed CORS origins: %s", strings.Join(allowedOrigins, ", "))
+	}
+
 	log.Printf("listening on :%s (max request body %d bytes)", port, bodyLimit)
+
+	// Middleware chain, outermost first:
+	//
+	//   SecurityHeaders -> CORS -> observability -> BodyLimit -> mux
+	//
+	// SecurityHeaders is outermost so every response carries the headers,
+	// including CORS preflight rejections and the 413 produced by BodyLimit.
+	//
+	// CORS sits outside observability so a preflight is answered without
+	// creating a trace span or a latency sample. The trade-off is that preflights
+	// do not appear in Prometheus or the access log; real requests still do.
+	//
+	// BodyLimit stays innermost, adjacent to the router, so an oversized body is
+	// rejected before any handler reads it. Its 413 response still travels back
+	// out through observability (so it is counted) and through CORS and
+	// SecurityHeaders (so it carries the correct headers).
 	handler := middleware.BodyLimit(bodyLimit)(mux)
-	server := newServer(":"+port, observability.Middleware(handler))
+	handler = observability.Middleware(handler)
+	handler = middleware.CORS(allowedOrigins)(handler)
+	handler = middleware.SecurityHeaders(handler)
+
+	server := newServer(":"+port, handler)
 
 	// SIGINT/SIGTERM cancel signalCtx, which drains the server before exit.
 	// Resources are released explicitly via cleanup rather than with defer,
