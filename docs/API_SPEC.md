@@ -49,6 +49,7 @@
 | VALIDATION_ERROR     | 422         | Input tidak valid              |
 | NOT_FOUND            | 404         | Resource tidak ditemukan       |
 | INTERNAL_ERROR       | 500         | Error tak terduga              |
+| PAYLOAD_TOO_LARGE    | 413         | Request body melebihi batas ukuran (`MAX_REQUEST_BODY_SIZE`) |
 
 ## Catatan untuk Agent
 - Setiap endpoint baru wajib ditambahkan ke tabel di atas SEBELUM merge.

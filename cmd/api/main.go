@@ -10,6 +10,7 @@ import (
 
 	"observastack/internal/auth"
 	"observastack/internal/config"
+	"observastack/internal/middleware"
 	"observastack/internal/observability"
 )
 
@@ -80,6 +81,15 @@ func main() {
 			Password string `json:"password"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if middleware.IsBodyTooLarge(err) {
+				fmt.Fprintf(os.Stderr, "BODY TOO LARGE: %v\n", err)
+				os.Stderr.Sync()
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusRequestEntityTooLarge)
+				fmt.Fprintf(w, `{"error":{"code":%q,"message":"Request body exceeds maximum allowed size"}}`,
+					middleware.CodePayloadTooLarge)
+				return
+			}
 			fmt.Fprintf(os.Stderr, "DECODE ERROR: %v\n", err)
 			os.Stderr.Sync()
 			w.Header().Set("Content-Type", "application/json")
@@ -94,8 +104,9 @@ func main() {
 		fmt.Fprintf(w, `{"data":{"email":"%s"}}`, req.Email)
 	}))))
 
-	log.Printf("listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, observability.Middleware(mux)); err != nil {
+	log.Printf("listening on :%s (max request body %d bytes)", port, middleware.MaxRequestBodySize())
+	handler := middleware.BodyLimit(middleware.MaxRequestBodySize())(mux)
+	if err := http.ListenAndServe(":"+port, observability.Middleware(handler)); err != nil {
 		log.Fatal(err)
 	}
 }
