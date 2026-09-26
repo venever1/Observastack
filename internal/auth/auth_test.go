@@ -13,6 +13,14 @@ type memoryRepository struct {
 	usersByEmail  map[string]*User
 	refreshByHash map[string]*RefreshToken
 	roles         map[string]string
+	tenants       map[string]string // tenantID -> name
+	members       map[string]string // tenantID+":"+userID -> role
+
+	// inTxFailWith, when set, makes InTx abort before running fn, simulating a
+	// transaction that fails to start.
+	inTxFailWith error
+	// inTxCalls counts how many transactions were opened.
+	inTxCalls int
 }
 
 func newMemoryRepository() *memoryRepository {
@@ -20,7 +28,38 @@ func newMemoryRepository() *memoryRepository {
 		usersByEmail:  make(map[string]*User),
 		refreshByHash: make(map[string]*RefreshToken),
 		roles:         make(map[string]string),
+		tenants:       make(map[string]string),
+		members:       make(map[string]string),
 	}
+}
+
+// InTx runs fn directly. The in-memory store has no transactions, so this
+// cannot exercise rollback; it exists to satisfy the interface and to let tests
+// assert that Register routes its writes through InTx.
+func (r *memoryRepository) InTx(_ context.Context, fn func(UserRepository) error) error {
+	r.mu.Lock()
+	r.inTxCalls++
+	failWith := r.inTxFailWith
+	r.mu.Unlock()
+
+	if failWith != nil {
+		return failWith
+	}
+	return fn(r)
+}
+
+func (r *memoryRepository) CreateTenant(_ context.Context, id, name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tenants[id] = name
+	return nil
+}
+
+func (r *memoryRepository) AddMember(_ context.Context, tenantID, userID, role string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.members[tenantID+":"+userID] = role
+	return nil
 }
 
 func (r *memoryRepository) GetRole(_ context.Context, tenantID, userID string) (string, error) {
@@ -40,14 +79,15 @@ func (r *memoryRepository) EmailExists(_ context.Context, email string) (bool, e
 	return exists, nil
 }
 
-func (r *memoryRepository) CreateUser(_ context.Context, id, email, passwordHash string) error {
+func (r *memoryRepository) CreateUser(_ context.Context, id, email, passwordHash string) (time.Time, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, exists := r.usersByEmail[email]; exists {
-		return ErrEmailAlreadyExists
+		return time.Time{}, ErrEmailAlreadyExists
 	}
-	r.usersByEmail[email] = &User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: time.Now()}
-	return nil
+	now := time.Now()
+	r.usersByEmail[email] = &User{ID: id, Email: email, PasswordHash: passwordHash, CreatedAt: now}
+	return now, nil
 }
 
 func (r *memoryRepository) GetUserByEmail(_ context.Context, email string) (*User, error) {
@@ -100,12 +140,12 @@ func newTestService(t *testing.T) (*Service, *memoryRepository) {
 
 func TestRegister(t *testing.T) {
 	service, _ := newTestService(t)
-	user, err := service.Register(context.Background(), "user@example.com", "password123")
+	registration, err := service.Register(context.Background(), "user@example.com", "password123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if user.Email != "user@example.com" || user.ID == "" {
-		t.Fatalf("unexpected user: %#v", user)
+	if registration.User.Email != "user@example.com" || registration.User.ID == "" {
+		t.Fatalf("unexpected user: %#v", registration.User)
 	}
 
 	_, err = service.Register(context.Background(), "user@example.com", "password123")
@@ -135,11 +175,11 @@ func TestLogin(t *testing.T) {
 
 func TestRefreshRotatesToken(t *testing.T) {
 	service, repo := newTestService(t)
-	user, err := service.Register(context.Background(), "user@example.com", "password123")
+	registration, err := service.Register(context.Background(), "user@example.com", "password123")
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldToken, err := service.issueRefreshToken(context.Background(), user.ID)
+	oldToken, err := service.issueRefreshToken(context.Background(), registration.User.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

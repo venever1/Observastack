@@ -36,6 +36,15 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	})
 }
 
+// writeJSON encodes v with encoding/json. Going through the encoder rather than
+// string interpolation is what makes quotes, backslashes, newlines and
+// non-ASCII characters in user input safe to echo back.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
 // Auth verifies the Bearer JWT in the Authorization header and stores the user ID in context.
 func Auth(parser TokenParser) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {

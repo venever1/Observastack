@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log"
 	"net"
@@ -23,8 +22,9 @@ import (
 // ReadHeaderTimeout caps the Slowloris window (headers sent slowly).
 // ReadTimeout covers headers plus the whole body read; WriteTimeout bounds the
 // response. None of the current endpoints need longer: /healthz and /readyz are
-// a status write and a DB ping, /metrics is a Prometheus scrape, and
-// /auth/register is a JSON decode plus one bcrypt hash (~250ms at cost 12).
+// a status write and a DB ping, /metrics is a Prometheus scrape, and the auth
+// endpoints are a JSON decode plus one bcrypt hash at cost 12, which measures
+// roughly 390ms on commodity server hardware — comfortably inside ReadTimeout.
 // There is no file-upload route today, so these values are not restrictive.
 const (
 	readHeaderTimeout = 5 * time.Second
@@ -38,86 +38,9 @@ const (
 	shutdownTimeout = 15 * time.Second
 )
 
-// apiError is the error object defined in docs/API_SPEC.md.
-type apiError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-type apiErrorResponse struct {
-	Error apiError `json:"error"`
-}
-
-type registerData struct {
-	Email string `json:"email"`
-}
-
-type registerResponse struct {
-	Data registerData `json:"data"`
-}
-
-// codeValidationError is the API_SPEC error code for a malformed request body.
-const codeValidationError = "VALIDATION_ERROR"
-
 // envAllowedOriginsName is referenced in startup logs so operators know exactly
 // which variable to set when cross-origin access is being blocked.
 const envAllowedOriginsName = "ALLOWED_ORIGINS"
-
-// writeJSON encodes v with encoding/json. Going through the encoder rather than
-// string interpolation is what makes quotes, backslashes, newlines and
-// non-ASCII characters in user input safe to echo back.
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
-}
-
-// newRegisterHandler handles POST /auth/register.
-//
-// Internal error detail is logged server-side through the structured logger and
-// never echoed to the client; the response carries only a generic message inside
-// the API_SPEC error envelope.
-func newRegisterHandler(logger *observability.Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		start := time.Now()
-
-		var req struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			if middleware.IsBodyTooLarge(err) {
-				logger.Error(r.Context(), r.Method, r.URL.Path, http.StatusRequestEntityTooLarge,
-					time.Since(start), "request body too large", err)
-				writeJSON(w, http.StatusRequestEntityTooLarge, apiErrorResponse{
-					Error: apiError{
-						Code:    middleware.CodePayloadTooLarge,
-						Message: "Request body exceeds maximum allowed size",
-					},
-				})
-				return
-			}
-
-			logger.Error(r.Context(), r.Method, r.URL.Path, http.StatusBadRequest,
-				time.Since(start), "decode request body", err)
-			writeJSON(w, http.StatusBadRequest, apiErrorResponse{
-				Error: apiError{
-					Code:    codeValidationError,
-					Message: "Invalid request body",
-				},
-			})
-			return
-		}
-
-		// Email is masked and the password is never logged.
-		logger.Info(r.Context(), "INFO", r.Method, r.URL.Path, http.StatusOK,
-			time.Since(start), "registration received for "+observability.MaskEmail(req.Email))
-
-		writeJSON(w, http.StatusOK, registerResponse{
-			Data: registerData{Email: req.Email},
-		})
-	}
-}
 
 func main() {
 	port := os.Getenv("APP_PORT")
@@ -143,9 +66,6 @@ func main() {
 	}
 	log.Printf("✓ token manager created")
 
-	_ = tokens
-	_ = db
-
 	tracerProvider := observability.InitJaeger("observastack")
 	if tracerProvider == nil {
 		log.Printf("warning: tracer provider not initialized, tracing disabled")
@@ -154,6 +74,14 @@ func main() {
 	}
 	logger := observability.NewLogger()
 	log.Printf("✓ structured logger initialized")
+
+	// Auth stack. The repository reuses the pool already opened above, matching
+	// the pattern in tenant.Resolver, where a concrete repository is built in
+	// main and injected as an interface into the consumer.
+	authRepo := auth.NewPostgresRepository(db)
+	authService := auth.NewService(authRepo, tokens, cfg.JWTRefreshTTL)
+	authHandler := auth.NewHandler(authService, logger)
+	log.Printf("✓ auth service wired")
 
 	mux := http.NewServeMux()
 
@@ -173,10 +101,20 @@ func main() {
 		w.Write([]byte(`{"status":"ready"}`))
 	})))
 
-	// Traced critical routes (2): /metrics + /auth/register
+	// Traced routes: /metrics plus the four auth endpoints from docs/API_SPEC.md.
 	// Order per route: Tracer (outer) -> Log (inner, sees span) -> handler
 	mux.Handle("GET /metrics", observability.TracerMiddleware(observability.LogMiddleware(logger)(observability.Handler())))
-	mux.Handle("POST /auth/register", observability.TracerMiddleware(observability.LogMiddleware(logger)(newRegisterHandler(logger))))
+
+	authRoutes := map[string]http.HandlerFunc{
+		"POST /auth/register": authHandler.Register,
+		"POST /auth/login":    authHandler.Login,
+		"POST /auth/refresh":  authHandler.Refresh,
+		"POST /auth/logout":   authHandler.Logout,
+	}
+	for pattern, handler := range authRoutes {
+		mux.Handle(pattern, observability.TracerMiddleware(
+			observability.LogMiddleware(logger)(handler)))
+	}
 
 	bodyLimit, err := middleware.MaxRequestBodySize()
 	if err != nil {

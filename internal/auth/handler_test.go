@@ -2,12 +2,14 @@ package auth
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"observastack/internal/middleware"
 	"observastack/internal/observability"
 )
 
@@ -179,3 +181,132 @@ func TestRegisterHandler_NoEmailOnDecodeFailure(t *testing.T) {
 // MaskEmail itself is covered by internal/observability/redact_test.go. The
 // assertions here only verify that this handler actually routes emails through
 // it.
+
+// A hostile email must not be able to break out of the JSON string it is placed
+// in, whatever characters it contains.
+func TestRegisterHandler_EscapesHostileEmail(t *testing.T) {
+	hostile := []struct {
+		name  string
+		email string
+	}{
+		{name: "double quote", email: `a"b@example.com`},
+		{name: "backslash", email: `a\b@example.com`},
+		{name: "newline", email: "a\nb@example.com"},
+		{name: "carriage return", email: "a\rb@example.com"},
+		{name: "injected field", email: `a","role":"admin`},
+		{name: "json fragment", email: `"},"data":{"admin":true},"x":"`},
+		{name: "unicode", email: `ünïcödé@例え.jp`},
+		{name: "control char", email: "a\x01b@example.com"},
+		{name: "angle brackets", email: `<script>alert(1)</script>@example.com`},
+	}
+
+	for _, tc := range hostile {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestHandler(t)
+
+			body, err := json.Marshal(map[string]string{
+				"email":    tc.email,
+				"password": "password123",
+			})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+
+			rec := callRegister(t, h, string(body))
+
+			// 201 Created or a 4xx validation failure are both acceptable; what
+			// must never happen is an unparseable body.
+			var parsed struct {
+				Data struct {
+					Email string `json:"email"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+				t.Fatalf("response is not valid JSON: %v (body=%q)", err, rec.Body.String())
+			}
+
+			if rec.Code == http.StatusCreated && parsed.Data.Email != tc.email {
+				t.Errorf("email round-trip mismatch:\n got  %q\n want %q", parsed.Data.Email, tc.email)
+			}
+		})
+	}
+}
+
+// A malformed body must not leak the internal decoder error to the client.
+func TestRegisterHandler_DoesNotLeakInternalError(t *testing.T) {
+	h, logBuf := newTestHandler(t)
+
+	rec := callRegister(t, h, `{"email": not-json,,,}`)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 (body=%q)", rec.Code, rec.Body.String())
+	}
+
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("error response is not valid JSON: %v (body=%q)", err, rec.Body.String())
+	}
+	if parsed.Error.Code != "VALIDATION_ERROR" {
+		t.Errorf("code = %q, want VALIDATION_ERROR", parsed.Error.Code)
+	}
+	if parsed.Error.Message != "Invalid request body" {
+		t.Errorf("message = %q, want the generic %q", parsed.Error.Message, "Invalid request body")
+	}
+
+	// The decoder detail must not reach the client body.
+	if strings.Contains(rec.Body.String(), "invalid character") ||
+		strings.Contains(rec.Body.String(), "json:") {
+		t.Errorf("internal error detail leaked to client: %q", rec.Body.String())
+	}
+
+	// But it must be recorded server-side.
+	if !strings.Contains(logBuf.String(), "decode request body") {
+		t.Errorf("expected a server-side log of the decode failure, got %q", logBuf.String())
+	}
+}
+
+// An oversized body must be reported as 413, matching the Content-Length fast
+// path in middleware.BodyLimit, even for chunked requests.
+func TestRegisterHandler_BodyTooLarge(t *testing.T) {
+	h, _ := newTestHandler(t)
+	handler := middleware.BodyLimit(64)(http.HandlerFunc(h.Register))
+
+	big := `{"email":"` + strings.Repeat("a", 200) + `@example.com","password":"password123"}`
+	rec := postRegister(t, handler, big)
+
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 (body=%q)", rec.Code, rec.Body.String())
+	}
+
+	var parsed struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("413 response is not valid JSON: %v (body=%q)", err, rec.Body.String())
+	}
+	if parsed.Error.Code != middleware.CodePayloadTooLarge {
+		t.Errorf("code = %q, want %q", parsed.Error.Code, middleware.CodePayloadTooLarge)
+	}
+	if strings.Contains(rec.Body.String(), "http: request body too large") {
+		t.Errorf("internal error detail leaked to client: %q", rec.Body.String())
+	}
+}
+
+// postRegister sends a request body through an arbitrary handler.
+func postRegister(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/register", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	return rec
+}

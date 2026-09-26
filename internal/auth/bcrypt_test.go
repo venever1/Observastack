@@ -91,7 +91,7 @@ func TestLogin_VerifiesLegacyCost10Hash(t *testing.T) {
 		t.Fatalf("legacy cost equals bcryptCost; the test would be vacuous")
 	}
 
-	if err := repo.CreateUser(ctx, "legacy-user-id", "legacy@example.com", string(legacyHash)); err != nil {
+	if _, err := repo.CreateUser(ctx, "legacy-user-id", "legacy@example.com", string(legacyHash)); err != nil {
 		t.Fatalf("seed legacy user: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestLogin_VerifiesMixedCostHashes(t *testing.T) {
 	}
 
 	for _, u := range users {
-		if err := repo.CreateUser(ctx, u.id, u.email, string(u.hash)); err != nil {
+		if _, err := repo.CreateUser(ctx, u.id, u.email, string(u.hash)); err != nil {
 			t.Fatalf("seed %s: %v", u.email, err)
 		}
 		if _, err := service.Login(ctx, u.email, sharedPassword); err != nil {
