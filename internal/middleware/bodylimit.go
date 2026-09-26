@@ -5,9 +5,11 @@ package middleware
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -21,19 +23,36 @@ const (
 )
 
 // MaxRequestBodySize resolves the request body limit from MAX_REQUEST_BODY_SIZE,
-// falling back to DefaultMaxRequestBodySize when unset or unparsable.
-func MaxRequestBodySize() int64 {
+// falling back to DefaultMaxRequestBodySize only when the variable is unset.
+//
+// A set-but-invalid value is an operator error and returns an error rather than
+// silently falling back, so a typo cannot be mistaken for a working config.
+func MaxRequestBodySize() (int64, error) {
 	raw := os.Getenv(envMaxRequestBodySize)
 	if raw == "" {
-		return DefaultMaxRequestBodySize
+		return DefaultMaxRequestBodySize, nil
 	}
 
-	size, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || size <= 0 {
-		return DefaultMaxRequestBodySize
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0, fmt.Errorf(
+			"%s is set but empty; expected a plain integer number of bytes (no unit suffixes such as \"10MB\")",
+			envMaxRequestBodySize)
 	}
 
-	return size
+	size, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"%s must be a plain integer number of bytes (no unit suffixes such as \"10MB\"), got %q",
+			envMaxRequestBodySize, raw)
+	}
+	if size <= 0 {
+		return 0, fmt.Errorf(
+			"%s must be a plain integer number of bytes greater than zero, got %d",
+			envMaxRequestBodySize, size)
+	}
+
+	return size, nil
 }
 
 // BodyLimit returns middleware that caps request bodies at limit bytes.

@@ -3,15 +3,31 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"observastack/internal/auth"
 	"observastack/internal/config"
 	"observastack/internal/middleware"
 	"observastack/internal/observability"
+)
+
+// Server timeouts bound how long a client may hold a connection.
+// ReadHeaderTimeout caps the Slowloris window (headers sent slowly).
+// ReadTimeout covers headers plus the whole body read; WriteTimeout bounds the
+// response. None of the current endpoints need longer: /healthz and /readyz are
+// a status write and a DB ping, /metrics is a Prometheus scrape, and
+// /auth/register is a JSON decode plus one bcrypt hash (~250ms at cost 12).
+// There is no file-upload route today, so these values are not restrictive.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 10 * time.Second
+	writeTimeout      = 10 * time.Second
+	idleTimeout       = 120 * time.Second
 )
 
 func main() {
@@ -104,9 +120,29 @@ func main() {
 		fmt.Fprintf(w, `{"data":{"email":"%s"}}`, req.Email)
 	}))))
 
-	log.Printf("listening on :%s (max request body %d bytes)", port, middleware.MaxRequestBodySize())
-	handler := middleware.BodyLimit(middleware.MaxRequestBodySize())(mux)
-	if err := http.ListenAndServe(":"+port, observability.Middleware(handler)); err != nil {
+	bodyLimit, err := middleware.MaxRequestBodySize()
+	if err != nil {
 		log.Fatal(err)
+	}
+
+	log.Printf("listening on :%s (max request body %d bytes)", port, bodyLimit)
+	handler := middleware.BodyLimit(bodyLimit)(mux)
+
+	server := newServer(":"+port, observability.Middleware(handler))
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatal(err)
+	}
+}
+
+// newServer builds the HTTP server with defensive timeouts. Exposed as a
+// separate constructor so the timeout values stay unit-testable.
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
 	}
 }

@@ -125,10 +125,14 @@ func TestBodyLimit_DoesNotLimitGET(t *testing.T) {
 	}
 }
 
-func TestMaxRequestBodySize_Defaults(t *testing.T) {
+func TestMaxRequestBodySize_DefaultsWhenUnset(t *testing.T) {
 	t.Setenv(envMaxRequestBodySize, "")
 
-	if got := MaxRequestBodySize(); got != DefaultMaxRequestBodySize {
+	got, err := MaxRequestBodySize()
+	if err != nil {
+		t.Fatalf("expected no error when unset, got %v", err)
+	}
+	if got != DefaultMaxRequestBodySize {
 		t.Fatalf("expected default %d, got %d", DefaultMaxRequestBodySize, got)
 	}
 }
@@ -136,21 +140,75 @@ func TestMaxRequestBodySize_Defaults(t *testing.T) {
 func TestMaxRequestBodySize_FromEnv(t *testing.T) {
 	t.Setenv(envMaxRequestBodySize, "2048")
 
-	if got := MaxRequestBodySize(); got != 2048 {
+	got, err := MaxRequestBodySize()
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if got != 2048 {
 		t.Fatalf("expected 2048, got %d", got)
 	}
 }
 
-func TestMaxRequestBodySize_InvalidFallsBackToDefault(t *testing.T) {
-	for _, raw := range []string{"not-a-number", "0", "-1"} {
-		t.Run(raw, func(t *testing.T) {
-			t.Setenv(envMaxRequestBodySize, raw)
+// A set-but-invalid value must fail loudly rather than silently becoming the
+// default, otherwise an operator believes a limit is applied when it is not.
+func TestMaxRequestBodySize_InvalidIsAnError(t *testing.T) {
+	cases := []struct {
+		name         string
+		raw          string
+		wantInErrMsg string
+	}{
+		{name: "unit suffix", raw: "10MB", wantInErrMsg: "10MB"},
+		{name: "not a number", raw: "abc", wantInErrMsg: "abc"},
+		{name: "zero", raw: "0", wantInErrMsg: "0"},
+		{name: "negative", raw: "-1", wantInErrMsg: "-1"},
+		{name: "float", raw: "1.5", wantInErrMsg: "1.5"},
+	}
 
-			if got := MaxRequestBodySize(); got != DefaultMaxRequestBodySize {
-				t.Fatalf("expected fallback %d for %q, got %d",
-					DefaultMaxRequestBodySize, raw, got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(envMaxRequestBodySize, tc.raw)
+
+			got, err := MaxRequestBodySize()
+			if err == nil {
+				t.Fatalf("expected an error for %q, got limit %d", tc.raw, got)
+			}
+			if !strings.Contains(err.Error(), envMaxRequestBodySize) {
+				t.Errorf("error must name the env var %q, got: %v", envMaxRequestBodySize, err)
+			}
+			if !strings.Contains(err.Error(), "bytes") {
+				t.Errorf("error must state the expected format (bytes), got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantInErrMsg) {
+				t.Errorf("error must quote the offending value %q, got: %v", tc.wantInErrMsg, err)
 			}
 		})
+	}
+}
+
+// Whitespace-only is "set but empty", not "unset": falling back silently here
+// would reintroduce the exact misconfiguration blindness being fixed.
+func TestMaxRequestBodySize_WhitespaceOnlyIsAnError(t *testing.T) {
+	t.Setenv(envMaxRequestBodySize, "   ")
+
+	got, err := MaxRequestBodySize()
+	if err == nil {
+		t.Fatalf("expected an error for whitespace-only value, got limit %d", got)
+	}
+	if !strings.Contains(err.Error(), envMaxRequestBodySize) {
+		t.Errorf("error must name the env var, got: %v", err)
+	}
+}
+
+// Surrounding whitespace is tolerated rather than treated as a typo.
+func TestMaxRequestBodySize_TrimsWhitespace(t *testing.T) {
+	t.Setenv(envMaxRequestBodySize, "  4096  ")
+
+	got, err := MaxRequestBodySize()
+	if err != nil {
+		t.Fatalf("expected whitespace to be tolerated, got %v", err)
+	}
+	if got != 4096 {
+		t.Fatalf("expected 4096, got %d", got)
 	}
 }
 
