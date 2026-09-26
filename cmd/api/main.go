@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +37,93 @@ const (
 	// readTimeout so a request already reading a body is not cut off mid-read.
 	shutdownTimeout = 15 * time.Second
 )
+
+// apiError is the error object defined in docs/API_SPEC.md.
+type apiError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type apiErrorResponse struct {
+	Error apiError `json:"error"`
+}
+
+type registerData struct {
+	Email string `json:"email"`
+}
+
+type registerResponse struct {
+	Data registerData `json:"data"`
+}
+
+// codeValidationError is the API_SPEC error code for a malformed request body.
+const codeValidationError = "VALIDATION_ERROR"
+
+// writeJSON encodes v with encoding/json. Going through the encoder rather than
+// string interpolation is what makes quotes, backslashes, newlines and
+// non-ASCII characters in user input safe to echo back.
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// maskEmail redacts the local part of an email address so logs can correlate a
+// registration attempt without recording the full address.
+func maskEmail(email string) string {
+	at := strings.IndexByte(email, '@')
+	if at <= 0 {
+		return "***"
+	}
+	return email[:1] + "***" + email[at:]
+}
+
+// newRegisterHandler handles POST /auth/register.
+//
+// Internal error detail is logged server-side through the structured logger and
+// never echoed to the client; the response carries only a generic message inside
+// the API_SPEC error envelope.
+func newRegisterHandler(logger *observability.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		var req struct {
+			Email    string `json:"email"`
+			Password string `json:"password"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if middleware.IsBodyTooLarge(err) {
+				logger.Error(r.Context(), r.Method, r.URL.Path, http.StatusRequestEntityTooLarge,
+					time.Since(start), "request body too large", err)
+				writeJSON(w, http.StatusRequestEntityTooLarge, apiErrorResponse{
+					Error: apiError{
+						Code:    middleware.CodePayloadTooLarge,
+						Message: "Request body exceeds maximum allowed size",
+					},
+				})
+				return
+			}
+
+			logger.Error(r.Context(), r.Method, r.URL.Path, http.StatusBadRequest,
+				time.Since(start), "decode request body", err)
+			writeJSON(w, http.StatusBadRequest, apiErrorResponse{
+				Error: apiError{
+					Code:    codeValidationError,
+					Message: "Invalid request body",
+				},
+			})
+			return
+		}
+
+		// Email is masked and the password is never logged.
+		logger.Info(r.Context(), "INFO", r.Method, r.URL.Path, http.StatusOK,
+			time.Since(start), "registration received for "+maskEmail(req.Email))
+
+		writeJSON(w, http.StatusOK, registerResponse{
+			Data: registerData{Email: req.Email},
+		})
+	}
+}
 
 func main() {
 	port := os.Getenv("APP_PORT")
@@ -95,36 +182,7 @@ func main() {
 	// Traced critical routes (2): /metrics + /auth/register
 	// Order per route: Tracer (outer) -> Log (inner, sees span) -> handler
 	mux.Handle("GET /metrics", observability.TracerMiddleware(observability.LogMiddleware(logger)(observability.Handler())))
-	mux.Handle("POST /auth/register", observability.TracerMiddleware(observability.LogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(os.Stderr, "INLINE HANDLER CALLED\n")
-		os.Stderr.Sync()
-		var req struct {
-			Email    string `json:"email"`
-			Password string `json:"password"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			if middleware.IsBodyTooLarge(err) {
-				fmt.Fprintf(os.Stderr, "BODY TOO LARGE: %v\n", err)
-				os.Stderr.Sync()
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusRequestEntityTooLarge)
-				fmt.Fprintf(w, `{"error":{"code":%q,"message":"Request body exceeds maximum allowed size"}}`,
-					middleware.CodePayloadTooLarge)
-				return
-			}
-			fmt.Fprintf(os.Stderr, "DECODE ERROR: %v\n", err)
-			os.Stderr.Sync()
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error":"decode failed: %v"}`, err)
-			return
-		}
-		fmt.Fprintf(os.Stderr, "DECODED: email=%q password=[REDACTED]\n", req.Email)
-		os.Stderr.Sync()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"data":{"email":"%s"}}`, req.Email)
-	}))))
+	mux.Handle("POST /auth/register", observability.TracerMiddleware(observability.LogMiddleware(logger)(newRegisterHandler(logger))))
 
 	bodyLimit, err := middleware.MaxRequestBodySize()
 	if err != nil {
