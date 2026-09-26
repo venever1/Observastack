@@ -9,8 +9,10 @@
 - [x] Setup project skeleton + struktur folder
 - [x] Setup Postgres connection + migration tool
 - [x] Model & migration: tenants, users, tenant_members
-- [x] Auth: register, login, JWT + refresh token
+- [x] Auth service: register, login, refresh, logout, JWT + refresh token
+- [x] Auth HTTP wiring: `auth.Handler` terhubung ke mux (`/auth/*`), plus tenant + membership dibuat saat register
 - [x] Middleware: auth verify, tenant resolver, RBAC
+- [ ] Fix file migration: 3 file `.up.sql` masih memuat section `-- +migrate Down`, sehingga golang-migrate menjalankan `DROP TABLE` di dalam migration yang sama (lihat "Known Issues" di bawah)
 
 ## Minggu 3: Observability Dasar
 - [x] Integrasi Prometheus client, expose `/metrics`
@@ -44,3 +46,21 @@
 - [ ] ArgoCD untuk GitOps deployment
 - [ ] Alerting via Alertmanager → Slack/Discord
 - [ ] Multi-region read replica Postgres
+
+## Known Issues
+- **Migration `refresh_tokens` & `tasks` tidak pernah ter-create.** Tiga file
+  `migrations/*.up.sql` (`add_refresh_tokens`, `add_tasks_table`,
+  `schema_consistency`) memuat section `-- +migrate Up` **dan** `-- +migrate Down`
+  di dalam file yang sama. golang-migrate mengeksekusi seluruh isi file sebagai satu
+  batch, jadi tabel dibuat lalu langsung di-`DROP` oleh section Down di file yang sama.
+  Dampak: `make migrate` gagal di `schema_consistency` dengan
+  `relation "refresh_tokens" does not exist`, dan `schema_migrations` tertinggal `dirty = true`.
+  Fix: pisahkan section Down ke file `.down.sql` masing-masing (dua file sudah ada:
+  `add_tasks_table` dan `schema_consistency` belum punya `.down.sql`).
+- **Rate limiting belum terpasang.** `internal/auth/ratelimit.go` sudah ada
+  (Redis fixed-window, key `ratelimit:login:<email>`) tapi belum di-wire, belum ada
+  client Redis di `main.go`, dan belum ada HTTP 429 + `Retry-After`. Catatan: key-nya
+  hanya per-email (bukan per-IP) dan `Incr`+`Expire` tidak atomik.
+- `TestMiddleware_CountsRequests` (`internal/observability/metrics_test.go`) tidak
+  idempoten: gagal bila dijalankan dengan `go test -count=2` karena membandingkan
+  counter Prometheus global dengan literal `1`.
