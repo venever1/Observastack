@@ -13,6 +13,23 @@
 - [x] Auth HTTP wiring: `auth.Handler` terhubung ke mux (`/auth/*`), plus tenant + membership dibuat saat register
 - [x] Middleware: auth verify, tenant resolver, RBAC
 
+## Minggu 5: Rate Limiting
+- [x] Redis client di `main.go` (fail-fast saat startup, close saat graceful shutdown)
+- [x] Rate limiter atomic via Lua script (ganti `INCR` + `EXPIRE` non-atomik)
+- [x] Limit per-IP **dan** per-email untuk `/auth/login` (AND, bukan OR)
+- [x] Limit per-IP untuk `/auth/register`
+- [x] HTTP 429 + header `Retry-After` dari sisa TTL yang sebenarnya
+- [x] `X-Forwarded-For` hanya dipercaya bila `TRUSTED_PROXY=true`
+- [ ] Limit per-tenant untuk route yang sudah terautentikasi (butuh `tenant.Resolver` aktif di route)
+
+## Minggu 1–2: Core Backend
+- [x] Setup project skeleton + struktur folder
+- [x] Setup Postgres connection + migration tool
+- [x] Model & migration: tenants, users, tenant_members
+- [x] Auth service: register, login, refresh, logout, JWT + refresh token
+- [x] Auth HTTP wiring: `auth.Handler` terhubung ke mux (`/auth/*`), plus tenant + membership dibuat saat register
+- [x] Middleware: auth verify, tenant resolver, RBAC
+
 ## Minggu 3: Observability Dasar
 - [x] Integrasi Prometheus client, expose `/metrics`
 - [x] Middleware metrics (request count, duration, status)
@@ -47,12 +64,18 @@
 - [ ] Multi-region read replica Postgres
 
 ## Known Issues
-- **Rate limiting belum terpasang.** `internal/auth/ratelimit.go` sudah ada
-  (Redis fixed-window, key `ratelimit:login:<email>`) tapi belum di-wire, belum ada
-  client Redis di `main.go`, dan belum ada HTTP 429 + `Retry-After`. Catatan: key-nya
-  hanya per-email (bukan per-IP) dan `Incr`+`Expire` tidak atomik.
+- ~~Rate limiting belum terpasang.~~ **Sudah selesai** — lihat bagian "Minggu 5: Rate Limiting".
+  Catatan operasional: `TRUSTED_PROXY` **wajib** `true` di produksi karena Traefik
+  berada di depan app (`docs/ARCHITECTURE.md`). Kalau dibiarkan `false` di produksi,
+  semua request akan terlihat berasal dari satu IP proxy sehingga limit per-IP
+  berlaku global untuk semua user.
 - `TestMiddleware_CountsRequests` (`internal/observability/metrics_test.go`) tidak
   idempoten: gagal bila dijalankan dengan `go test -count=2` karena membandingkan
   counter Prometheus global dengan literal `1`.
 - `make` tidak tersedia di environment Windows proyek ini; jalankan `./cmd/migrate`
   langsung via `go run ./cmd/migrate up|down`.
+- Test integrasi butuh dependency eksternal dan di-skip secara default. Jalankan:
+  ```
+  INTEGRATION_DATABASE_URL='postgres://observastack:observastack@localhost:5432/observastack?sslmode=disable' go test ./internal/auth/ -run Integration
+  INTEGRATION_REDIS_URL='redis://localhost:6379' go test ./internal/middleware/ -run IntegrationRateLimit
+  ```
