@@ -1,0 +1,14 @@
+.git
+.gitignore
+*.md
+*.MD
+deploy/
+migrations/
+.env
+.env.local
+docs/
+internal/observability/metrics_test.go
+internal/auth/*_test.go
+internal/tenant/*_test.go
+Makefile
+.dockerignore

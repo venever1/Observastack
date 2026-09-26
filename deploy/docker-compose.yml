@@ -1,0 +1,120 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: observastack-postgres
+    environment:
+      POSTGRES_USER: observastack
+      POSTGRES_PASSWORD: observastack
+      POSTGRES_DB: observastack
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - observastack
+
+  redis:
+    image: redis:7
+    container_name: observastack-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - observastack
+
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: observastack-app
+    ports:
+      - "8080:8080"
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: observastack
+      POSTGRES_PASSWORD: observastack
+      POSTGRES_DB: observastack
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      APP_PORT: 8080
+      JWT_SECRET: change_me_super_secret
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL: 168h
+      OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
+      OTEL_TRACE_SAMPLE_RATIO: 0.1
+    depends_on:
+      - postgres
+      - redis
+      - jaeger
+    networks:
+      - observastack
+
+  prometheus:
+    image: prom/prometheus:v3.3.0
+    container_name: observastack-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+    networks:
+      - observastack
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: observastack-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - observastack
+
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: observastack-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+    command:
+      - -config.file=/etc/loki/loki-config.yml
+    networks:
+      - observastack
+
+  promtail:
+    image: grafana/promtail:3.4.2
+    container_name: observastack-promtail
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - ./promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+    command:
+      - -config.file=/etc/promtail/promtail-config.yml
+    depends_on:
+      - loki
+    networks:
+      - observastack
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    container_name: observastack-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - observastack
+
+networks:
+  observastack:
+    driver: bridge
+
+volumes:
+  postgres_data:

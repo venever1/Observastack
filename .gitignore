@@ -1,0 +1,25 @@
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Build artifacts
+/app
+/app.exe
+*.exe
+*.test
+*.out
+bin/
+dist/
+
+# Go
+vendor/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
