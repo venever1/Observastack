@@ -1,0 +1,28 @@
+package config
+
+import (
+	"context"
+	"fmt"
+	"net"
+	"strconv"
+
+	"github.com/redis/go-redis/v9"
+)
+
+// OpenRedis builds a Redis client and verifies the connection with a PING,
+// mirroring OpenPostgres: a broken dependency fails startup rather than
+// surfacing later as per-request errors.
+func OpenRedis(ctx context.Context, host string, port int, password string, db int) (*redis.Client, error) {
+	client := redis.NewClient(&redis.Options{
+		Addr:     net.JoinHostPort(host, strconv.Itoa(port)),
+		Password: password,
+		DB:       db,
+	})
+
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("ping redis: %w", err)
+	}
+
+	return client, nil
+}
