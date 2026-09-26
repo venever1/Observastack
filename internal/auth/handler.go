@@ -2,32 +2,53 @@ package auth
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
+	"strings"
+	"time"
+
+	"observastack/internal/observability"
 )
 
 type Handler struct {
 	service *Service
+	logger  *observability.Logger
 }
 
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+// NewHandler builds the auth HTTP handlers.
+//
+// A logger is required rather than optional so handlers cannot silently fall
+// back to unstructured logging. Passwords must never reach the log output in
+// any form, not even masked.
+func NewHandler(service *Service, logger *observability.Logger) *Handler {
+	return &Handler{service: service, logger: logger}
+}
+
+// maskEmail redacts the local part of an email so a log entry can identify its
+// subject without recording the full address.
+func maskEmail(email string) string {
+	at := strings.IndexByte(email, '@')
+	if at <= 0 {
+		return "***"
+	}
+	return email[:1] + "***" + email[at:]
 }
 
 func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Register called, method=%s, content-type=%s", r.Method, r.Header.Get("Content-Type"))
-	
+	start := time.Now()
+
 	var req struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("decode failed: %v, email=%q, password=%q", err, req.Email, req.Password)
+		// Deliberately logs neither the password nor the raw email: a decode
+		// failure can contain attacker-controlled content, and LogMiddleware
+		// already records trace_id/method/path/status for this request.
+		h.logger.Error(r.Context(), r.Method, r.URL.Path, http.StatusUnprocessableEntity,
+			time.Since(start), "decode request body", err)
 		writeError(w, http.StatusUnprocessableEntity, "VALIDATION_ERROR", "Invalid request body")
 		return
 	}
-	
-	log.Printf("decoded: email=%q, password=%q", req.Email, req.Password)
 
 	user, err := h.service.Register(r.Context(), req.Email, req.Password)
 	if err != nil {
@@ -43,6 +64,9 @@ func (h *Handler) Register(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
+	h.logger.Info(r.Context(), "INFO", r.Method, r.URL.Path, http.StatusCreated,
+		time.Since(start), "registration accepted for "+maskEmail(user.Email))
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
