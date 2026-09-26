@@ -85,14 +85,16 @@ func IsBodyTooLarge(err error) bool {
 	return errors.As(err, &maxBytesErr)
 }
 
-func writePayloadTooLarge(w http.ResponseWriter, limit int64) {
+// writePayloadError writes an error response in the docs/API_SPEC.md envelope.
+func writePayloadError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]string{
-			"code": CodePayloadTooLarge,
-			"message": "Request body exceeds maximum allowed size of " +
-				strconv.FormatInt(limit, 10) + " bytes",
-		},
+		"error": map[string]string{"code": code, "message": message},
 	})
+}
+
+func writePayloadTooLarge(w http.ResponseWriter, limit int64) {
+	writePayloadError(w, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
+		"Request body exceeds maximum allowed size of "+strconv.FormatInt(limit, 10)+" bytes")
 }
