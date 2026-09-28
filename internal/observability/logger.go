@@ -19,6 +19,12 @@ func NewLogger() *Logger {
 	}
 }
 
+// defaultLogger backs the few code paths that must report something but have no
+// logger injected, such as the panic recovery in Middleware. It writes the same
+// JSON shape as NewLogger, so a panic still lands in Loki as a structured line
+// rather than a bare stderr write.
+var defaultLogger = NewLogger()
+
 type LogEntry struct {
 	Timestamp string `json:"timestamp"`
 	TraceID   string `json:"trace_id"`

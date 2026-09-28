@@ -3,7 +3,6 @@ package observability
 import (
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -44,11 +43,14 @@ func Middleware(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		
 		defer func() {
-			if err := recover(); err != nil {
-				fmt.Fprintf(os.Stderr, "PANIC in handler: %v\n", err)
-				os.Stderr.Sync()
+			if v := recover(); v != nil {
+				// recover() yields any, not error; wrap so the value is logged
+				// even when the handler panicked with a non-error value.
+				err := fmt.Errorf("panic: %v", v)
 				rec.status = http.StatusInternalServerError
-				panic(err)
+				defaultLogger.Error(r.Context(), r.Method, r.URL.Path,
+					rec.status, time.Since(start), "panic in handler", err)
+				panic(v)
 			}
 		}()
 		
