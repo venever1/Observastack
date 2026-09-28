@@ -1,0 +1,47 @@
+# Explicit golangci-lint configuration.
+#
+# Every linter that runs is listed here rather than relying on the default set.
+# Defaults differ between v1 and v2 of golangci-lint, so relying on them means a
+# version bump can silently add or remove checks. Pinning the set keeps a local
+# run and the CI run identical.
+#
+# Version must match the golangci-lint binary used in CI, pinned in
+# .github/workflows/ci.yml. Both must be v2 or later: the v2 config schema is
+# rejected by v1, and v1 binaries built with an older Go refuse to analyze a
+# module targeting a newer one.
+version: "2"
+
+run:
+  # go.mod declares go 1.27.1. golangci-lint refuses to run when the Go version
+  # it was compiled with is older than the version it is asked to analyze, so
+  # this must track the toolchain in ci.yml.
+  go: "1.27"
+  timeout: 5m
+
+linters:
+  # Same set golangci-lint enables by default in v2, stated explicitly.
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+  exclusions:
+    # Deliberately deferred, not forgotten.
+    #
+    # SA1029 flags context.WithValue keyed by a built-in string, which is the
+    # "tenantID" convention in internal/observability. Fixing it properly means
+    # introducing a typed context key and updating every producer and consumer,
+    # so it is tracked as its own change rather than silenced forever.
+    rules:
+      - path: 'internal/observability/.*\.go'
+        linters:
+          - staticcheck
+        text: 'SA1029'
+
+formatters:
+  # gofmt is a formatter in v2, not a linter. It is what `make lint` and CI
+  # both rely on to keep the tree formatted.
+  enable:
+    - gofmt
