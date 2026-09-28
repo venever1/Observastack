@@ -13,12 +13,21 @@ func TestNewTracerProvider_CreatesProvider(t *testing.T) {
 	if provider == nil {
 		t.Fatal("expected non-nil tracer provider")
 	}
-	provider.Shutdown(context.Background())
+	// Shutdown flushes pending spans and closes the exporter. A failure here
+	// means the exporter could not drain, which is worth surfacing but must not
+	// mask the assertion this test exists to make.
+	if err := provider.Shutdown(context.Background()); err != nil {
+		t.Logf("tracer shutdown: %v", err)
+	}
 }
 
 func TestTraceIDFromContext_ExtractsFromSpan(t *testing.T) {
 	provider := InitJaeger("test")
-	defer provider.Shutdown(context.Background())
+	defer func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Logf("tracer shutdown: %v", err)
+		}
+	}()
 
 	ctx, span := provider.Tracer("test").Start(context.Background(), "test-span")
 	defer span.End()
@@ -44,7 +53,7 @@ func TestLogMiddleware_CapturesRequest(t *testing.T) {
 	logger := NewLogger()
 
 	var buf strings.Builder
-	logger.Logger.SetOutput(&buf)
+	logger.SetOutput(&buf)
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -71,12 +80,16 @@ func TestLogMiddleware_CapturesRequest(t *testing.T) {
 
 func TestLogMiddleware_traceIDCorrelation(t *testing.T) {
 	provider := InitJaeger("test")
-	defer provider.Shutdown(context.Background())
+	defer func() {
+		if err := provider.Shutdown(context.Background()); err != nil {
+			t.Logf("tracer shutdown: %v", err)
+		}
+	}()
 
 	logger := NewLogger()
 
 	var buf strings.Builder
-	logger.Logger.SetOutput(&buf)
+	logger.SetOutput(&buf)
 
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

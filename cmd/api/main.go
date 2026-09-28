@@ -106,20 +106,26 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Untraced: health check & readiness probe
+	// Untraced: health check & readiness probe.
+	//
+	// A write error on these two probes means the client hung up before reading
+	// the body. There is no recovery to attempt and nowhere to report it to: the
+	// probe has already answered, and the orchestrator that would have read it is
+	// the party that went away. Retrying or logging would add nothing, so the
+	// error is discarded deliberately.
 	mux.Handle("GET /healthz", observability.LogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})))
 
 	mux.Handle("GET /readyz", observability.LogMiddleware(logger)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if err := db.Ping(ctx); err != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
-			w.Write([]byte(`{"status":"not ready","error":"database down"}`))
+			_, _ = w.Write([]byte(`{"status":"not ready","error":"database down"}`))
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ready"}`))
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
 	})))
 
 	// Traced routes: /metrics plus the four auth endpoints from docs/API_SPEC.md.

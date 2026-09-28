@@ -52,7 +52,7 @@ func (f *fakeStore) eval(_ context.Context, keys []string, windowMS int64) (int6
 
 	var ttl int64
 	if exp, ok := f.expiry[key]; ok {
-		ttl = int64(exp.Sub(time.Now()) / time.Millisecond)
+		ttl = int64(time.Until(exp) / time.Millisecond)
 	}
 	return count, ttl, nil
 }

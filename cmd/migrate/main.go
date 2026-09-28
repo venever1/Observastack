@@ -29,7 +29,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("create migration runner: %v", err)
 	}
-	defer migrations.Close()
+	// Close releases both the source and the database connection, reporting each
+	// independently. Errors are logged rather than treated as fatal: by this
+	// point the migrations have already been applied or rejected, and turning a
+	// cleanup failure into a non-zero exit would report a failed run for work
+	// that in fact succeeded.
+	defer func() {
+		if sourceErr, dbErr := migrations.Close(); sourceErr != nil || dbErr != nil {
+			log.Printf("close migration runner: source=%v database=%v", sourceErr, dbErr)
+		}
+	}()
 
 	switch os.Args[1] {
 	case "up":
