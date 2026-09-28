@@ -10,17 +10,27 @@ jobs:
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
+      # v7 is the latest major; v5 was the first on the node24 runtime, and v6
+      # onwards is node24 too. v7 additionally blocks checking out fork PR code
+      # for the pull_request_target and workflow_run triggers, which this
+      # workflow does not use (it triggers on pull_request and push), so no
+      # allow-unsafe-pr-checkout input is needed here.
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
+      # v6 moved to the node24 runtime. v7 is an ESM migration upstream with no
+      # input, output, or behaviour change, so it is safe to take as well.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version: '1.27'
 
       # golangci-lint-action v7+ supports golangci-lint v2 only, and v2 config
       # files (version: "2") are rejected by v1, so the action and the binary
-      # must move together. v8 requires golangci-lint >= v2.1.0.
+      # must move together. The action README's compatibility table requires
+      # golangci-lint >= v2.1.0 for action v8, and the v9.0.0 release notes
+      # raise the runtime to node24 without raising that floor, so v2.13.2 below
+      # stays within range.
       #
       # Pinned to an exact patch, not the v2.13 minor. Specifying a minor makes
       # the action resolve the latest patch at run time, so CI would silently
@@ -33,7 +43,7 @@ jobs:
       # golangci-lint is lower than the targeted Go version" and the job fails
       # before linting anything.
       - name: Run linter
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
 
@@ -49,32 +59,41 @@ jobs:
       packages: write
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      # Each docker/* action below moved to node24 in its v4 or v6 major, so
+      # these are the minimum majors that clear the node20 deprecation.
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
+      # v4 removed the deprecated inputs/outputs announced in v3.12.0. None of
+      # them are set below, so no workflow change is required.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # v6 keeps a literal "#" inside list values, which matters only if a value
+      # here ever contains one. The tags below do not.
       - name: Extract metadata (tags, labels) for Docker
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
+      # v7 removed the DOCKER_BUILD_NO_SUMMARY and DOCKER_BUILD_EXPORT_RETENTION_DAYS
+      # env vars. Neither is set in this workflow or in the repository.
       - name: Build and push Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
