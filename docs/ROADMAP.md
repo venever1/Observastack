@@ -77,9 +77,21 @@
   IP proxy dan limit per-IP jadi global untuk semua user.
   JANGAN pernah `true` bila app bisa dijangkau langsung dari internet: header
   `X-Forwarded-For` dikontrol klien, jadi limit per-IP bisa di-bypass sepenuhnya.
-- `TestMiddleware_CountsRequests` (`internal/observability/metrics_test.go`) tidak
-  idempoten: gagal bila dijalankan dengan `go test -count=2` karena membandingkan
-  counter Prometheus global dengan literal `1`.
+- **SA1029 (`staticcheck`) masih ditunda** — `context.WithValue` masih memakai
+  key `string` biasa (`"tenantID"`), bukan typed key milik package.
+  Staticcheck bisa di-silent lewat exclusion di `.golangci.yml`
+  (`linters.exclusions.rules`, hanya untuk `internal/observability`), **bukan**
+  karena masalahnya sudah selesai. Jangan dianggap beres hanya karena exclusion
+  masih ada; findings-nya masih muncul kalau config diabaikan.
+  Alasan ditunda: fix yang benar berarti bikin typed context key di satu tempat
+  lalu update **semua** producer dan consumer-nya (logger, tenant resolver,
+  middleware, dan test), jadi jauh lebih besar dari refactor kecil.
+  Urutan pengerjaan yang disarankan:
+  1. Type assertion di `internal/observability/logger.go` (`tenantID.(string)`)
+     sudah diubah ke comma-ok, jadi logger tidak lagi panic saat nilai
+     non-string. Ini **sudah selesai** dan terpisah dari typed key.
+  2. Typed context key adalah pekerjaan tersendiri. Setelah itu exclusion SA1029
+     di `.golangci.yml` harus **dihapus**, karena tidak lagi dibutuhkan.
 - `make` tidak tersedia di environment Windows proyek ini; jalankan `./cmd/migrate`
   langsung via `go run ./cmd/migrate up|down`.
 - Test integrasi butuh dependency eksternal dan di-skip secara default. Jalankan:
