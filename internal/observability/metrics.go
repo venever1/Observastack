@@ -41,7 +41,7 @@ func Middleware(next http.Handler) http.Handler {
 		}
 		start := time.Now()
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-		
+
 		defer func() {
 			if v := recover(); v != nil {
 				// recover() yields any, not error; wrap so the value is logged
@@ -53,7 +53,7 @@ func Middleware(next http.Handler) http.Handler {
 				panic(v)
 			}
 		}()
-		
+
 		next.ServeHTTP(rec, r)
 		status := strconv.Itoa(rec.status)
 		path := normalizeRoutePath(r.URL.Path)
