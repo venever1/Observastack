@@ -52,11 +52,13 @@ func (l *Logger) Error(ctx context.Context, method, path string, status int, lat
 }
 
 func (l *Logger) newEntry(ctx context.Context, level, method, path string, status int, latency time.Duration, msg string) LogEntry {
-	tenantID := ctx.Value("tenantID")
-	tenantIDStr := ""
-	if tenantID != nil {
-		tenantIDStr = tenantID.(string)
-	}
+	// Comma-ok rather than a bare assertion: a panic inside the logger would
+	// replace whatever the handler was doing with a logger failure, and a
+	// mistyped context value is a programming error, not a reason to drop the
+	// connection. Anything that is not a string is treated as no tenant.
+	// The value is deliberately not logged: it may hold arbitrary data, and a
+	// mis-typed value is not useful in an access log.
+	tenantIDStr, _ := ctx.Value("tenantID").(string)
 
 	return LogEntry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),
