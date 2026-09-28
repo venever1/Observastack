@@ -1,0 +1,13 @@
+# Normalize line endings in the repository and check them out as LF everywhere.
+#
+# Without this, line endings depend on each developer's core.autocrlf setting, so
+# a Windows checkout produces CRLF that gofmt then flags, while a Linux CI
+# checkout sees LF and finds nothing. That produced spurious gofmt failures.
+#
+# The index already stores every tracked file as LF, so adding this changes no
+# committed content.
+* text=auto eol=lf
+
+# Windows-only scripts are the exception: they need CRLF to run under cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf
