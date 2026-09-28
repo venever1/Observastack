@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"observastack/internal/requestctx"
 )
 
 type Logger struct {
@@ -52,13 +54,12 @@ func (l *Logger) Error(ctx context.Context, method, path string, status int, lat
 }
 
 func (l *Logger) newEntry(ctx context.Context, level, method, path string, status int, latency time.Duration, msg string) LogEntry {
-	// Comma-ok rather than a bare assertion: a panic inside the logger would
-	// replace whatever the handler was doing with a logger failure, and a
-	// mistyped context value is a programming error, not a reason to drop the
-	// connection. Anything that is not a string is treated as no tenant.
-	// The value is deliberately not logged: it may hold arbitrary data, and a
-	// mis-typed value is not useful in an access log.
-	tenantIDStr, _ := ctx.Value("tenantID").(string)
+	// Read through requestctx rather than a literal key. The key type is
+	// unexported and lives in one place, so this is the only key that can
+	// collide with a value set by tenant.Resolver. A missing or non-string
+	// tenant reads as no tenant: the log is best-effort context, not a place to
+	// fail a request.
+	tenantIDStr, _ := requestctx.TenantIDFrom(ctx)
 
 	return LogEntry{
 		Timestamp: time.Now().UTC().Format(time.RFC3339),

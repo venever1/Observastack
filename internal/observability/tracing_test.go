@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"observastack/internal/requestctx"
 )
 
 func TestNewTracerProvider_CreatesProvider(t *testing.T) {
@@ -60,8 +62,7 @@ func TestLogMiddleware_CapturesRequest(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test-path", nil)
-	ctx := context.WithValue(req.Context(), "tenantID", "tenant-abc")
-	req = req.WithContext(ctx)
+	req = req.WithContext(requestctx.WithTenantID(req.Context(), "tenant-abc"))
 
 	LogMiddleware(logger)(next).ServeHTTP(rec, req)
 
@@ -98,7 +99,7 @@ func TestLogMiddleware_traceIDCorrelation(t *testing.T) {
 	ctx, span := provider.Tracer("test").Start(context.Background(), "test-span")
 	defer span.End()
 	traceID := span.SpanContext().TraceID().String()
-	ctx = context.WithValue(ctx, "tenantID", "tenant-abc")
+	ctx = requestctx.WithTenantID(ctx, "tenant-abc")
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/test-path", nil)

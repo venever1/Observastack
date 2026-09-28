@@ -77,21 +77,28 @@
   IP proxy dan limit per-IP jadi global untuk semua user.
   JANGAN pernah `true` bila app bisa dijangkau langsung dari internet: header
   `X-Forwarded-For` dikontrol klien, jadi limit per-IP bisa di-bypass sepenuhnya.
-- **SA1029 (`staticcheck`) masih ditunda** — `context.WithValue` masih memakai
-  key `string` biasa (`"tenantID"`), bukan typed key milik package.
-  Staticcheck bisa di-silent lewat exclusion di `.golangci.yml`
-  (`linters.exclusions.rules`, hanya untuk `internal/observability`), **bukan**
-  karena masalahnya sudah selesai. Jangan dianggap beres hanya karena exclusion
-  masih ada; findings-nya masih muncul kalau config diabaikan.
-  Alasan ditunda: fix yang benar berarti bikin typed context key di satu tempat
-  lalu update **semua** producer dan consumer-nya (logger, tenant resolver,
-  middleware, dan test), jadi jauh lebih besar dari refactor kecil.
-  Urutan pengerjaan yang disarankan:
-  1. Type assertion di `internal/observability/logger.go` (`tenantID.(string)`)
-     sudah diubah ke comma-ok, jadi logger tidak lagi panic saat nilai
-     non-string. Ini **sudah selesai** dan terpisah dari typed key.
-  2. Typed context key adalah pekerjaan tersendiri. Setelah itu exclusion SA1029
-     di `.golangci.yml` harus **dihapus**, karena tidak lagi dibutuhkan.
+- ~~**SA1029 (`staticcheck`) masih ditunda.**~~ **Sudah selesai** — context key
+  tenant sekarang hidup di `internal/requestctx`, satu package leaf yang hanya
+  mengekspor `WithTenantID` dan `TenantIDFrom`; tipe key-nya unexported, jadi
+  tidak ada package lain yang bisa membuat atau memalsukan key tersebut.
+  Exclusion SA1029 di `.golangci.yml` sudah **dihapus**; `golangci-lint` bersih
+  tanpa exclusion apa pun.
+  - **Ini memperbaiki bug, bukan sekadar rename.** Sebelumnya logger membaca key
+    `string` polos `"tenantID"` sementara `tenant.Resolver` menulis key bertipe
+    miliknya sendiri. Keduanya key yang berbeda, jadi field `tenant_id` di log
+    **selalu kosong**. Dibuktikan dengan test end-to-end di
+    `internal/tenant/tenantid_logging_test.go` yang memakai `tenant.Resolver`
+    asli sebagai producer dan logger asli sebagai consumer.
+  - **Belum terverifikasi di runtime.** `tenant.Resolver` belum dipasang ke route
+    mana pun di `cmd/api/main.go`, jadi belum ada request produksi yang melewati
+    chain `Auth -> Resolver -> handler`. Test membuktikan alurnya benar di level
+    middleware, tetapi `tenant_id` baru bisa terlihat benar-benar terisi di log
+    Loki setelah Resolver dipasang ke route tenant-scoped. Lihat bagian
+    "Minggu 5: Rate Limiting" untuk item limit per-tenant yang bergantung pada ini.
+  - `userIDKey` di `internal/auth` masih memakai `type contextKey string` lokal
+    dan **belum** dipindah ke `internal/requestctx`. Itu di luar scope perubahan
+    ini. Tetap jadi risiko kalau nanti ditambah context key baru di package itu;
+    ada baiknya dipindah sekaligus saat route tenant-scoped mulai dipasang.
 - `make` tidak tersedia di environment Windows proyek ini; jalankan `./cmd/migrate`
   langsung via `go run ./cmd/migrate up|down`.
 - Test integrasi butuh dependency eksternal dan di-skip secara default. Jalankan:

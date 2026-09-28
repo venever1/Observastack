@@ -7,19 +7,17 @@ import (
 	"net/http"
 
 	"observastack/internal/auth"
+	"observastack/internal/requestctx"
 )
-
-type contextKey string
-
-const tenantIDKey contextKey = "tenantID"
 
 type MemberStore interface {
 	GetRole(ctx context.Context, tenantID, userID string) (string, error)
 }
 
+// TenantIDFromContext returns the tenant set by Resolver. Delegates to
+// requestctx, which owns the key so the logger can read the same value.
 func TenantIDFromContext(ctx context.Context) (string, bool) {
-	tenantID, ok := ctx.Value(tenantIDKey).(string)
-	return tenantID, ok && tenantID != ""
+	return requestctx.TenantIDFrom(ctx)
 }
 
 func writeError(w http.ResponseWriter, status int, code, message string) {
@@ -60,7 +58,7 @@ func Resolver(store MemberStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), tenantIDKey, tenantID)
+			ctx := requestctx.WithTenantID(r.Context(), tenantID)
 			ctx = auth.WithRole(ctx, role)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})

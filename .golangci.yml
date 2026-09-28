@@ -20,25 +20,17 @@ run:
 
 linters:
   # Same set golangci-lint enables by default in v2, stated explicitly.
+  #
+  # There are no exclusions. The SA1029 exclusion that used to silence
+  # context.WithValue with a plain string key is gone: internal/requestctx now
+  # owns the tenant key behind an unexported type, so the finding is fixed
+  # rather than suppressed.
   enable:
     - errcheck
     - govet
     - ineffassign
     - staticcheck
     - unused
-
-  exclusions:
-    # Deliberately deferred, not forgotten.
-    #
-    # SA1029 flags context.WithValue keyed by a built-in string, which is the
-    # "tenantID" convention in internal/observability. Fixing it properly means
-    # introducing a typed context key and updating every producer and consumer,
-    # so it is tracked as its own change rather than silenced forever.
-    rules:
-      - path: 'internal/observability/.*\.go'
-        linters:
-          - staticcheck
-        text: 'SA1029'
 
 formatters:
   # gofmt is a formatter in v2, not a linter. It is what `make lint` and CI
