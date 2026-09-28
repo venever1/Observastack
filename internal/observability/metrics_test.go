@@ -5,7 +5,23 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
+
+// metricValue returns the current value of the http_requests_total series for
+// the given labels. The counter is process-global (registered with promauto on
+// the default registry), so tests must compare a delta rather than an absolute
+// value: anything else breaks under -count=2 and under any test that shares the
+// same label set.
+func metricValue(t *testing.T, labels ...string) float64 {
+	t.Helper()
+	c, err := requestsTotal.GetMetricWithLabelValues(labels...)
+	if err != nil {
+		t.Fatalf("get counter: %v", err)
+	}
+	return testutil.ToFloat64(c)
+}
 
 func TestHandler_ServesPrometheusMetrics(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -20,6 +36,9 @@ func TestHandler_ServesPrometheusMetrics(t *testing.T) {
 }
 
 func TestMiddleware_CountsRequests(t *testing.T) {
+	labels := []string{http.MethodGet, "/probe-middleware-count", "418"}
+	before := metricValue(t, labels...)
+
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
 	})
@@ -30,14 +49,14 @@ func TestMiddleware_CountsRequests(t *testing.T) {
 		t.Fatalf("got %d, want 418", rec.Code)
 	}
 
+	if got := metricValue(t, labels...) - before; got != 1 {
+		t.Fatalf("counter delta = %v, want 1", got)
+	}
+
 	mreq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	mrec := httptest.NewRecorder()
 	Handler().ServeHTTP(mrec, mreq)
-	body := mrec.Body.String()
-	if !strings.Contains(body, `http_requests_total{method="GET",path="/probe-middleware-count",status="418"} 1`) {
-		t.Fatalf("counter missing:\n%s", body)
-	}
-	if !strings.Contains(body, `http_request_duration_seconds_count{method="GET",path="/probe-middleware-count",status="418"} 1`) {
+	if body := mrec.Body.String(); !strings.Contains(body, `http_request_duration_seconds_count{method="GET",path="/probe-middleware-count",status="418"}`) {
 		t.Fatalf("histogram missing:\n%s", body)
 	}
 }
