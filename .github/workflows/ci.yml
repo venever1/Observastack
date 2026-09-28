@@ -22,15 +22,20 @@ jobs:
       # files (version: "2") are rejected by v1, so the action and the binary
       # must move together. v8 requires golangci-lint >= v2.1.0.
       #
-      # v2.13 is the first release built with go1.27, which go.mod targets. An
+      # Pinned to an exact patch, not the v2.13 minor. Specifying a minor makes
+      # the action resolve the latest patch at run time, so CI would silently
+      # start using a different binary than the one verified locally whenever a
+      # new patch ships. Keep this exact version in step with run.go in
+      # .golangci.yml and with the version used for local runs.
+      #
+      # v2.13.2 is the first release built with go1.27, which go.mod targets. An
       # older binary exits with "the Go language version used to build
       # golangci-lint is lower than the targeted Go version" and the job fails
-      # before linting anything. Keep this version in step with run.go in
-      # .golangci.yml.
+      # before linting anything.
       - name: Run linter
         uses: golangci/golangci-lint-action@v8
         with:
-          version: v2.13
+          version: v2.13.2
 
       - name: Run tests
         run: go test -race -v ./...
