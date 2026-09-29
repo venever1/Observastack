@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -42,7 +45,56 @@ var (
 const (
 	// roleAdmin is the role granted to the owner of a newly created tenant.
 	roleAdmin = "admin"
+
+	// authTracerName owns the auth domain spans in Jaeger, so they are easy
+	// to tell apart from the driver spans (pgx/redis) nested under them.
+	authTracerName = "observastack/auth"
 )
+
+// authTracer returns the tracer used for auth domain child spans. The spans
+// attach to whatever is in ctx — in production that is the request span opened
+// by TracerMiddleware, because handlers pass r.Context() down through the
+// service into the repository.
+func authTracer() trace.Tracer {
+	return otel.Tracer(authTracerName)
+}
+
+// failSpan records err on span and marks it failed. No request data is ever
+// attached here: passwords, hashes, tokens and emails must never land in span
+// attributes or events.
+func failSpan(span trace.Span, err error, msg string) {
+	span.RecordError(err)
+	span.SetStatus(codes.Error, msg)
+}
+
+// hashPassword hashes a new password for registration as its own span: bcrypt
+// at cost 12 dominates registration latency, so it must be visible apart from
+// the database writes.
+func hashPassword(ctx context.Context, password string) ([]byte, error) {
+	_, span := authTracer().Start(ctx, "auth.hash_password")
+	defer span.End()
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	if err != nil {
+		failSpan(span, err, "hash password")
+		return nil, err
+	}
+	return hash, nil
+}
+
+// verifyPassword compares the stored hash against the login attempt as its own
+// span: like hashing, the comparison costs hundreds of milliseconds and would
+// otherwise be invisible inside the single request span.
+func verifyPassword(ctx context.Context, hash, password string) error {
+	_, span := authTracer().Start(ctx, "auth.verify_password")
+	defer span.End()
+
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)); err != nil {
+		failSpan(span, err, "verify password")
+		return err
+	}
+	return nil
+}
 
 // Registration is the outcome of a successful Register call. The tenant ID is
 // returned so the client can use it as X-Tenant-ID on subsequent requests;
@@ -106,7 +158,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (*Regist
 		return nil, ErrEmailAlreadyExists
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
+	hash, err := hashPassword(ctx, password)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
 	}
@@ -115,21 +167,27 @@ func (s *Service) Register(ctx context.Context, email, password string) (*Regist
 	tenantID := uuid.New().String()
 	var createdAt time.Time
 
-	err = s.repo.InTx(ctx, func(txRepo UserRepository) error {
-		created, err := txRepo.CreateUser(ctx, userID, email, string(hash))
+	// The three inserts are one trace unit (auth.create_account) with the
+	// individual queries nested under it via txCtx. Passing the span context
+	// into InTx is what keeps the query spans as children of the request.
+	txCtx, txSpan := authTracer().Start(ctx, "auth.create_account")
+	err = s.repo.InTx(txCtx, func(txRepo UserRepository) error {
+		created, err := txRepo.CreateUser(txCtx, userID, email, string(hash))
 		if err != nil {
 			return err
 		}
 		createdAt = created
-		if err := txRepo.CreateTenant(ctx, tenantID, defaultTenantName(email)); err != nil {
+		if err := txRepo.CreateTenant(txCtx, tenantID, defaultTenantName(email)); err != nil {
 			return fmt.Errorf("create tenant: %w", err)
 		}
-		if err := txRepo.AddMember(ctx, tenantID, userID, roleAdmin); err != nil {
+		if err := txRepo.AddMember(txCtx, tenantID, userID, roleAdmin); err != nil {
 			return fmt.Errorf("add tenant member: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
+		failSpan(txSpan, err, "create account")
+		txSpan.End()
 		// Unwrap so the handler can still map sentinel errors to 4xx responses.
 		if errors.Is(err, ErrEmailAlreadyExists) {
 			return nil, ErrEmailAlreadyExists
@@ -139,6 +197,7 @@ func (s *Service) Register(ctx context.Context, email, password string) (*Regist
 		}
 		return nil, err
 	}
+	txSpan.End()
 
 	return &Registration{
 		User:     &User{ID: userID, Email: email, CreatedAt: createdAt},
@@ -179,11 +238,11 @@ func (s *Service) Login(ctx context.Context, email, password string) (*Tokens, e
 		return nil, ErrInvalidCredentials
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+	if err := verifyPassword(ctx, user.PasswordHash, password); err != nil {
 		return nil, ErrInvalidCredentials
 	}
 
-	accessToken, err := s.tokens.Generate(user.ID)
+	accessToken, err := s.generateAccessToken(ctx, user.ID)
 	if err != nil {
 		return nil, fmt.Errorf("generate access token: %w", err)
 	}
@@ -194,6 +253,20 @@ func (s *Service) Login(ctx context.Context, email, password string) (*Tokens, e
 	}
 
 	return &Tokens{AccessToken: accessToken, RefreshToken: refreshToken}, nil
+}
+
+// generateAccessToken signs a JWT access token as its own span so signing
+// latency is visible apart from password verification and database writes.
+func (s *Service) generateAccessToken(ctx context.Context, userID string) (string, error) {
+	_, span := authTracer().Start(ctx, "auth.generate_access_token")
+	defer span.End()
+
+	token, err := s.tokens.Generate(userID)
+	if err != nil {
+		failSpan(span, err, "generate access token")
+		return "", err
+	}
+	return token, nil
 }
 
 func (s *Service) Refresh(ctx context.Context, rawToken string) (*Tokens, error) {
@@ -212,7 +285,7 @@ func (s *Service) Refresh(ctx context.Context, rawToken string) (*Tokens, error)
 		return nil, fmt.Errorf("revoke refresh token: %w", err)
 	}
 
-	accessToken, err := s.tokens.Generate(rt.UserID)
+	accessToken, err := s.generateAccessToken(ctx, rt.UserID)
 	if err != nil {
 		return nil, fmt.Errorf("generate access token: %w", err)
 	}
@@ -226,8 +299,12 @@ func (s *Service) Refresh(ctx context.Context, rawToken string) (*Tokens, error)
 }
 
 func (s *Service) issueRefreshToken(ctx context.Context, userID string) (string, error) {
+	ctx, span := authTracer().Start(ctx, "auth.issue_refresh_token")
+	defer span.End()
+
 	raw, err := randomToken()
 	if err != nil {
+		failSpan(span, err, "generate refresh token")
 		return "", err
 	}
 
@@ -238,7 +315,10 @@ func (s *Service) issueRefreshToken(ctx context.Context, userID string) (string,
 		ExpiresAt: time.Now().Add(s.refreshTTL),
 	}
 
+	// The INSERT itself is traced by the pgx driver span nested under this
+	// one; only the raw token value stays out of the trace entirely.
 	if err := s.repo.SaveRefreshToken(ctx, rt); err != nil {
+		failSpan(span, err, "store refresh token")
 		return "", err
 	}
 

@@ -44,6 +44,9 @@ Client (React dashboard)
 ## 4. Prinsip Desain
 - **Tenant isolation by default**: setiap query WAJIB filter `tenant_id`. Tidak ada endpoint yang skip ini.
 - **Observability bukan tempelan**: metrics/log/trace dipasang di level middleware, bukan manual per handler.
+- **Trace berlapis untuk alur kritis**: selain span request dari middleware, alur auth menambah child span —
+  query PostgreSQL/Redis otomatis via instrumentasi driver, langkah non-DB (verifikasi password, pembuatan
+  token) via span manual `observastack/auth`. Tanpa data sensitif di attribute span (lihat ADR-003).
 - **Stateless backend**: semua state di Postgres/Redis, backend bisa di-scale horizontal kapan saja.
 - **Fail loud, log detail**: error harus punya `trace_id` yang bisa dilacak balik ke log & trace.
 
