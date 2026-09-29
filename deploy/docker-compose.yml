@@ -52,7 +52,7 @@ services:
       JWT_ACCESS_TTL: 15m
       JWT_REFRESH_TTL: 168h
       OTEL_EXPORTER_OTLP_ENDPOINT: jaeger:4317
-      OTEL_TRACE_SAMPLE_RATIO: 0.1
+      OTEL_TRACE_SAMPLE_RATIO: ${OTEL_TRACE_SAMPLE_RATIO:-0.1}
     depends_on:
       - postgres
       - redis
